@@ -7,11 +7,14 @@ interface IZoteroPane {
 }
 
 interface ZoteroCollection {
+  id: number
+  key: string
+  name: string
   getChildItems: (asIDs: boolean, includeDeleted: boolean) => [ZoteroItem]
 }
 
 interface ZoteroObserver {
-  notify: (event: string, type: string, ids: [number], extraData: Record<string, any>) => Promise<void>
+  notify: (event: string, type: string, ids: any[], extraData: Record<string, any>) => Promise<void>
 }
 
 interface ZoteroItem {
@@ -20,6 +23,8 @@ interface ZoteroItem {
   getField: (field: string, unformatted?: boolean, includeBaseMapped?: boolean) => string
   isRegularItem: () => boolean
   isCollection?: () => boolean
+  getCollections?: () => number[]
+  getAttachments?: () => number[]
 }
 
 interface ProgressWindow {
@@ -37,6 +42,7 @@ interface IZotero {
   launchURL: (url: string) => void
   getActiveZoteroPane: () => IZoteroPane
   getMainWindows: () => any[]
+  getMainWindow: () => any
 
   Notifier: {
     registerObserver: (observer: ZoteroObserver, types: string[], id: string, priority?: number) => number // any => ZoteroObserver
@@ -53,6 +59,10 @@ interface IZotero {
     getAll: (libraryID: number) => Promise<ZoteroItem[]>
   }
 
+  Collections: {
+    get: (id: number) => ZoteroCollection | false
+  }
+
   HTTP: {
     request: (method: string, url: string, options?: {
       body?: string,
@@ -64,6 +74,11 @@ interface IZotero {
 
   Attachments: {
     importFromURL: (options: Record<string, any>) => Promise<ZoteroItem>
+    importFromFile: (options: Record<string, any>) => Promise<ZoteroItem>
+  }
+
+  File: {
+    pathToFile: (path: string) => any
   }
 
   Libraries: {
@@ -85,4 +100,4 @@ interface IZotero {
   }
 }
 
-export { ZoteroItem, ZoteroObserver, IZotero, IZoteroPane, ProgressWindow }
+export { ZoteroItem, ZoteroObserver, IZotero, IZoteroPane, ProgressWindow, ZoteroCollection }

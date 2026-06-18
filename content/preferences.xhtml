@@ -19,6 +19,31 @@
       .settings-group {
         margin-bottom: 12px;
       }
+      .settings-group h3 {
+        margin: 4px 0;
+      }
+      .hint {
+        opacity: 0.7;
+        margin: 4px 0;
+      }
+      .folders-table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      .folders-table th,
+      .folders-table td {
+        text-align: left;
+        padding: 4px 6px;
+        border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+        vertical-align: middle;
+      }
+      .folders-table td.path {
+        opacity: 0.8;
+        word-break: break-all;
+      }
+      .folders-table button {
+        margin-left: 4px;
+      }
     </style>
   </head>
   <body>
@@ -35,6 +60,25 @@
         <input type="text" id="id-zoteroscihub-scihub-url" size="40"
                preference="extensions.zotero.zoteroscihub.scihub_url" />
       </div>
+    </div>
+
+    <div class="settings-group">
+      <h3>Collection folders</h3>
+      <p class="hint">
+        Each collection downloads its PDFs into the folder mapped here. Folders are
+        created the first time you download a collection; you can change or remove them below.
+      </p>
+      <table class="folders-table">
+        <thead>
+          <tr>
+            <th>Collection</th>
+            <th>Folder</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="scihub-folders-body"></tbody>
+      </table>
+      <p id="scihub-folders-empty" class="hint">No collection folders configured yet.</p>
     </div>
   </body>
 </html>

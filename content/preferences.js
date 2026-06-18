@@ -50,4 +50,66 @@ function initScihubPreferences() {
   }
 }
 
+// Renders the per-collection folder mappings with edit/remove controls.
+function renderCollectionFolders() {
+  try {
+    var body = document.getElementById("scihub-folders-body");
+    var empty = document.getElementById("scihub-folders-empty");
+    if (!body || !Zotero.Scihub) return;
+
+    var folders = Zotero.Scihub.getCollectionFolders();
+    var keys = Object.keys(folders);
+
+    while (body.firstChild) {
+      body.removeChild(body.firstChild);
+    }
+    empty.style.display = keys.length === 0 ? "" : "none";
+
+    keys.forEach(function (key) {
+      var entry = folders[key];
+
+      var tr = document.createElement("tr");
+
+      var tdName = document.createElement("td");
+      tdName.textContent = entry.name || key;
+
+      var tdPath = document.createElement("td");
+      tdPath.className = "path";
+      tdPath.textContent = entry.path;
+
+      var tdActions = document.createElement("td");
+      tdActions.style.whiteSpace = "nowrap";
+
+      var changeBtn = document.createElement("button");
+      changeBtn.textContent = "Change…";
+      changeBtn.addEventListener("click", function () {
+        Zotero.Scihub.pickFolder(window).then(function (path) {
+          if (path) {
+            Zotero.Scihub.setCollectionFolder(key, entry.name, path);
+            renderCollectionFolders();
+          }
+        });
+      });
+
+      var removeBtn = document.createElement("button");
+      removeBtn.textContent = "Remove";
+      removeBtn.addEventListener("click", function () {
+        Zotero.Scihub.removeCollectionFolder(key);
+        renderCollectionFolders();
+      });
+
+      tdActions.appendChild(changeBtn);
+      tdActions.appendChild(removeBtn);
+
+      tr.appendChild(tdName);
+      tr.appendChild(tdPath);
+      tr.appendChild(tdActions);
+      body.appendChild(tr);
+    });
+  } catch (e) {
+    Zotero.debug("Sci-Hub Plugin: Error rendering collection folders: " + e);
+  }
+}
+
 initScihubPreferences();
+renderCollectionFolders();

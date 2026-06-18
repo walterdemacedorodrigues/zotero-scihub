@@ -1,4 +1,4 @@
-import { IZotero, ZoteroItem, ZoteroObserver, ProgressWindow } from '../typings/zotero'
+import { IZotero, ZoteroItem, ZoteroObserver, ProgressWindow, ZoteroCollection } from '../typings/zotero'
 import { regularItem1, regularItem2 } from './zoteroItem.mock'
 import { spy } from 'sinon'
 
@@ -20,6 +20,7 @@ const Zotero: IZotero = new class {
     }
   }
   public getMainWindows() { return [] }
+  public getMainWindow() { return undefined }
 
   public Notifier: IZotero['Notifier'] = new class {
     public registerObserver(_observer: ZoteroObserver, _types: string[], _id: string, _priority?: number) {
@@ -55,6 +56,10 @@ const Zotero: IZotero = new class {
     }
   }
 
+  public Collections = new class {
+    public get(_id: number): ZoteroCollection | false { return false }
+  }
+
   public HTTP = new class {
     public async request(method: string, url: string, options?: {
       body?: string
@@ -75,6 +80,13 @@ const Zotero: IZotero = new class {
     public async importFromURL(_options: Record<string, any>): Promise<ZoteroItem> {
       return Promise.resolve(regularItem1)
     }
+    public async importFromFile(_options: Record<string, any>): Promise<ZoteroItem> {
+      return Promise.resolve(regularItem1)
+    }
+  }
+
+  public File = new class {
+    public pathToFile(path: string) { return path }
   }
 
   public Libraries = new class {

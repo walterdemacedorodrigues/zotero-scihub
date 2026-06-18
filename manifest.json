@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Sci-Hub Plugin for Zotero",
-  "version": "2.0.0",
+  "version": "2.2.0",
   "description": "Download papers and books by DOI from Sci-Hub",
   "homepage_url": "https://github.com/ethanwillis/zotero-scihub",
   "icons": {
@@ -12,8 +12,8 @@
     "zotero": {
       "id": "zotero-scihub@ethanwillis.github.io",
       "update_url": "https://github.com/ethanwillis/zotero-scihub/releases/download/release/updates.json",
-      "strict_min_version": "6.999",
-      "strict_max_version": "7.99.*"
+      "strict_min_version": "7.0",
+      "strict_max_version": "9.*"
     }
   }
 }

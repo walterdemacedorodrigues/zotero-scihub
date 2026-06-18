@@ -38,6 +38,11 @@ async function build() {
   const skinSrcDir = path.join(__dirname, 'skin')
   const skinDestDir = path.join(buildDir, 'skin')
   copyDirSync(skinSrcDir, skinDestDir)
+
+  // Copy locale directory (Fluent .ftl files used by Zotero 8+ menus)
+  const localeSrcDir = path.join(__dirname, 'locale')
+  const localeDestDir = path.join(buildDir, 'locale')
+  copyDirSync(localeSrcDir, localeDestDir)
 }
 
 function copyDirSync(src, dest) {

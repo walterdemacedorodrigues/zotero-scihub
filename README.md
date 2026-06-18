@@ -5,6 +5,8 @@ I've been away from any open source work for a while. I also have had issues wit
 
 This is an add-on for [Zotero](https://www.zotero.org/) and [Juris-M](https://juris-m.github.io/) that enables automatic download of PDFs for items with a DOI.
 
+Compatible with **Zotero 7, 8 and 9**. On Zotero 8+ the menu items are registered through the new `Zotero.MenuManager` API; on Zotero 7 the add-on falls back to manual menu injection.
+
 # Quick Start Guide
 
 #### Install
@@ -20,13 +22,25 @@ This is an add-on for [Zotero](https://www.zotero.org/) and [Juris-M](https://ju
 
 #### Usage
 
-Once you have the plugin installed simply, right click any item in your collections.
-There will now be a new context menu option titled "Update Scihub PDF." Once you
-click this, a PDF of the file will be downloaded from Scihub and attached to your
-item in Zotero.
+The plugin works per **collection**, and each collection downloads into its own folder:
 
-For any new papers you add after this plugin is installed, the scihub pdf will be
-automatically downloaded.
+- When you **add an article to a collection** (any collection except one named
+  `Inbox`), a **download-manager window** opens.
+  - If the collection doesn't have a folder yet, you're asked to pick one for it
+    (remembered for next time); if it does, that folder is used.
+  - The window lists the articles and, on **Start download**, fetches each PDF
+    sequentially, showing live per-item status — no per-file save prompts.
+- Each PDF is saved into the collection's folder **and** attached to the matching
+  Zotero item.
+- Items that are not in any collection, or only in `Inbox`, are ignored.
+- You can also open the manager manually by right-clicking a collection ("Download
+  Collection PDFs…"), via Tools ("Download Sci-Hub PDFs…", uses the selected
+  collection), or on selected items ("Download Sci-Hub PDF").
+- If a PDF can't be found (or a captcha is required), that item's row shows the
+  problem ("✕ No PDF found" / "⚠ Captcha required") and the rest continue.
+
+The collection → folder mappings can be viewed, changed, or removed in the plugin
+settings (Settings → Zotero Scihub).
 
 #### Configuration
 
