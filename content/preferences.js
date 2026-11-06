@@ -6,7 +6,8 @@
 // The preference attribute on the HTML elements handles auto-binding in Zotero 7,
 // but this script provides a fallback for manual initialization.
 function initScihubPreferences() {
-  var DEFAULT_SCIHUB_URL = "https://sci-hub.ru/";
+  var DEFAULT_SCIHUB_URL = "https://sci-hub.al/";
+  var DEFAULT_SCINET_URL = "https://sci-net.xyz/";
   var DEFAULT_AUTOMATIC_PDF_DOWNLOAD = true;
 
   try {
@@ -43,6 +44,19 @@ function initScihubPreferences() {
       sciHubUrlInput.value = currentUrl;
       sciHubUrlInput.addEventListener("input", function () {
         Zotero.Prefs.set("zoteroscihub.scihub_url", this.value);
+      });
+    }
+
+    var sciNetUrlInput = document.getElementById("id-zoteroscihub-scinet-url");
+    var currentScinetUrl = Zotero.Prefs.get("zoteroscihub.scinet_url");
+    if (currentScinetUrl === undefined) {
+      Zotero.Prefs.set("zoteroscihub.scinet_url", DEFAULT_SCINET_URL);
+      currentScinetUrl = DEFAULT_SCINET_URL;
+    }
+    if (sciNetUrlInput) {
+      sciNetUrlInput.value = currentScinetUrl;
+      sciNetUrlInput.addEventListener("input", function () {
+        Zotero.Prefs.set("zoteroscihub.scinet_url", this.value);
       });
     }
   } catch (e) {

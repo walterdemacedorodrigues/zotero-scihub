@@ -12,7 +12,7 @@ class ToolsPane {
       const libraryId = ZoteroPane.getSelectedLibraryID()
       const allItems = await Zotero.Items.getAll(libraryId)
       const items = allItems.filter(item => {
-        const isProcessable = item.isRegularItem() && !item.isCollection?.()
+        const isProcessable = item.isRegularItem()
         const isEditable: boolean = Zotero.Libraries.isEditable(item.libraryID)
 
         return isProcessable && isEditable

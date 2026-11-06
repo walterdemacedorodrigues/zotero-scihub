@@ -11,7 +11,10 @@ declare const PathUtils: any
 declare const Components: any
 
 enum HttpCodes {
+  // Zotero.HTTP.request reports 0 when no response came back (DNS failure, connection refused...)
+  NO_RESPONSE = 0,
   DONE = 200,
+  NOT_FOUND = 404,
 }
 
 class PdfNotFoundError extends Error {
@@ -19,6 +22,14 @@ class PdfNotFoundError extends Error {
     super(message)
     this.name = 'PdfNotFoundError'
     Object.setPrototypeOf(this, PdfNotFoundError.prototype)
+  }
+}
+
+class NetworkError extends Error {
+  constructor(public readonly host: string) {
+    super(`Cannot reach ${host}`)
+    this.name = 'NetworkError'
+    Object.setPrototypeOf(this, NetworkError.prototype)
   }
 }
 
@@ -53,6 +64,16 @@ interface ManagerRow {
   alreadyHas: boolean
   failed: boolean
   savedPath?: string
+  // Where the PDF came from, and whether Zotero already attached it (open access)
+  source?: string
+  attached?: boolean
+}
+
+// A PDF saved into the collection folder by downloadPdfToFolder
+interface SavedPdf {
+  path: string
+  source: string
+  attached: boolean
 }
 
 // One open download manager per collection. Items arriving while the window
@@ -66,7 +87,11 @@ interface ManagerHandle {
 class Scihub {
   // TOOD: only bulk-update items which are missing paper attachement
   private static readonly DEFAULT_SCIHUB_URL = 'https://sci-hub.al/'
+  // Sci-Hub stopped adding papers in 2022; newer ones are often uploaded to Sci-Net
+  private static readonly DEFAULT_SCINET_URL = 'https://sci-net.xyz/'
   private static readonly DEFAULT_AUTOMATIC_PDF_DOWNLOAD = true
+  private static readonly USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 11_3_1 like Mac OS X) '
+    + 'AppleWebKit/603.1.30 (KHTML, like Gecko) Version/10.0 Mobile/14E304 Safari/602.1'
   // Collections with this exact name are ignored by the plugin
   private static readonly INBOX_COLLECTION_NAME = 'Inbox'
   // Pref holding the per-collection folder map: { [collectionKey]: { name, path } }
@@ -93,7 +118,15 @@ class Scihub {
       Zotero.Prefs.set('zoteroscihub.scihub_url', Scihub.DEFAULT_SCIHUB_URL)
     }
 
-    return Zotero.Prefs.get('zoteroscihub.scihub_url') as string
+    return (Zotero.Prefs.get('zoteroscihub.scihub_url') as string).trim()
+  }
+
+  public getBaseScinetUrl(): string {
+    if (Zotero.Prefs.get('zoteroscihub.scinet_url') === undefined) {
+      Zotero.Prefs.set('zoteroscihub.scinet_url', Scihub.DEFAULT_SCINET_URL)
+    }
+
+    return (Zotero.Prefs.get('zoteroscihub.scinet_url') as string).trim()
   }
 
   public isAutomaticPdfDownload(): boolean {
@@ -123,18 +156,24 @@ class Scihub {
     // then user have to be redirected to the page to fill it in
     for (const item of items) {
       // Skip items which are not processable
-      if (!item.isRegularItem() || item.isCollection?.()) { continue }
+      if (!item.isRegularItem()) { continue }
 
-      // Skip items without DOI or if URL generation had failed
-      const scihubUrl = this.generateScihubItemUrl(item)
-      if (!scihubUrl) {
+      // Skip items which already have a PDF attached
+      if (await this.itemHasPdfAttachment(item)) {
+        Zotero.debug(`scihub: "${item.getField('title')}" already has a PDF attachment`)
+        continue
+      }
+
+      // Skip items without DOI
+      const doi = this.getDoi(item)
+      if (!doi) {
         ZoteroUtil.showPopup('DOI is missing', item.getField('title'), true)
         Zotero.debug(`scihub: failed to generate URL for "${item.getField('title')}"`)
         continue
       }
 
       try {
-        await this.updateItem(scihubUrl, item)
+        await this.updateItem(doi, item)
       } catch (error) {
         if (error instanceof CaptchaRequiredError) {
           // Skip this item and continue with remaining items
@@ -147,8 +186,16 @@ class Scihub {
           continue
         } else if (error instanceof PdfNotFoundError) {
           // Do not stop traversing items if PDF is missing for one of them
-          ZoteroUtil.showPopup('PDF not available', `Try again later.\n"${item.getField('title')}"`, true)
+          ZoteroUtil.showPopup('PDF not available', `${error.message}.\n"${item.getField('title')}"`, true)
           continue
+        } else if (error instanceof NetworkError) {
+          // Nothing will work for the other items either
+          ZoteroUtil.showPopup(
+            'Network error',
+            `Cannot reach ${error.host}. Your network may block it (DNS): try another mirror in the plugin settings.`,
+            true
+          )
+          break
         } else {
           // Skip this item on unexpected errors and continue with remaining items
           ZoteroUtil.showPopup(
@@ -163,27 +210,83 @@ class Scihub {
     }
   }
 
-  private async updateItem(scihubUrl: URL, item: ZoteroItem): Promise<void> {
+  private async updateItem(doi: string, item: ZoteroItem): Promise<void> {
     ZoteroUtil.showPopup('Fetching PDF', item.getField('title'))
-    const httpsUrl = await this.resolvePdfHttpsUrl(scihubUrl)
-    await ZoteroUtil.attachRemotePDFToItem(httpsUrl, item)
+    let pdf: { url: URL, source: string }
+    try {
+      pdf = await this.resolvePdfUrl(doi)
+    } catch (error) {
+      if (!(error instanceof PdfNotFoundError) && !(error instanceof NetworkError)) throw error
+      if (await this.attachOpenAccessPdf(item)) return
+      throw error
+    }
+    await ZoteroUtil.attachRemotePDFToItem(pdf.url, item)
+  }
+
+  // Resolves the PDF URL on Sci-Hub, falling back to Sci-Net for papers Sci-Hub
+  // does not have or cannot serve right now. Throws CaptchaRequiredError and
+  // unexpected errors from Sci-Hub as they are, without trying Sci-Net.
+  private async resolvePdfUrl(doi: string, onStatus?: (status: string) => void): Promise<{ url: URL, source: string }> {
+    const scihubUrl = new URL(doi, this.getBaseScihubUrl())
+    try {
+      return { url: await this.resolvePdfHttpsUrl(scihubUrl), source: 'Sci-Hub' }
+    } catch (scihubError) {
+      if (!(scihubError instanceof PdfNotFoundError) && !(scihubError instanceof NetworkError)) throw scihubError
+      const scinetUrl = new URL(doi, this.getBaseScinetUrl())
+      Zotero.debug(`scihub: ${scihubError.message}, trying "${scinetUrl}"`)
+      onStatus?.('Trying Sci-Net…')
+      try {
+        return { url: await this.resolveScinetPdfUrl(scinetUrl), source: 'Sci-Net' }
+      } catch (scinetError) {
+        Zotero.debug(`scihub: Sci-Net failed for "${scinetUrl}": ${scinetError}`)
+        // Report an unreachable Sci-Hub rather than a PDF it could not even look for
+        if (scihubError instanceof NetworkError) throw scihubError
+        throw new PdfNotFoundError('No PDF found')
+      }
+    }
+  }
+
+  // Zotero's own open-access lookup (Unpaywall, OpenAlex, publisher page).
+  // Returns the new attachment, or false if there is no open-access copy.
+  private async attachOpenAccessPdf(item: ZoteroItem): Promise<ZoteroItem | false> {
+    Zotero.debug(`scihub: looking for an open-access copy of "${item.getField('title')}"`)
+    try {
+      return await Zotero.Attachments.addAvailableFile(item)
+    } catch (error) {
+      Zotero.debug(`scihub: open-access lookup failed: ${error}`)
+      return false
+    }
+  }
+
+  // GET a Sci-Hub or Sci-Net page. Any status is returned, except 0 (no
+  // response at all), which throws NetworkError.
+  private async fetchPage(url: URL): Promise<XMLHttpRequest> {
+    const xhr = await Zotero.HTTP.request('GET', url.href, {
+      responseType: 'document',
+      // Sci-Hub may serve its pages (the captcha page too) with a long max-age:
+      // without this a retry after solving the captcha could get the cached captcha page
+      noCache: true,
+      // a 404 is Sci-Hub's "no such paper" answer, not a transport error
+      successCodes: false,
+      headers: { 'User-Agent': Scihub.USER_AGENT },
+      timeout: 30000,
+    })
+    if (xhr.status === HttpCodes.NO_RESPONSE) {
+      // The Gecko error code (e.g. NS_ERROR_UNKNOWN_HOST) tells DNS, TLS and connection problems apart
+      const channelStatus = (xhr as XMLHttpRequest & { channel?: { status: number } }).channel?.status
+      // eslint-disable-next-line @typescript-eslint/no-magic-numbers
+      Zotero.debug(`scihub: no response from "${url}" (channel status 0x${(channelStatus ?? 0).toString(16)})`)
+      throw new NetworkError(url.host)
+    }
+    return xhr
   }
 
   // Fetches the Sci-Hub landing page and resolves the direct (https) PDF URL.
-  // Throws PdfNotFoundError / CaptchaRequiredError / Error on failure.
+  // Throws PdfNotFoundError / CaptchaRequiredError / NetworkError / Error on failure.
   private async resolvePdfHttpsUrl(scihubUrl: URL): Promise<URL> {
-    const userAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 11_3_1 like Mac OS X) '
-      + 'AppleWebKit/603.1.30 (KHTML, like Gecko) Version/10.0 Mobile/14E304 Safari/602.1'
-    const xhr = await Zotero.HTTP.request(
-      'GET', scihubUrl.href, { responseType: 'document', headers: { 'User-Agent': userAgent }, timeout: 30000 }
-    )
-    // older .tf domains have iframe element, newer .st domain have embed element
-    const rawPdfUrl = xhr.responseXML?.querySelector('#pdf')?.getAttribute('src')
-    let pdfUrl = rawPdfUrl
-    // Prepend base URL if the PDF URL is a relative path (not absolute http/https or protocol-relative)
-    if (rawPdfUrl != null && !rawPdfUrl.startsWith('http') && !rawPdfUrl.startsWith('//')) {
-      pdfUrl = `${this.getBaseScihubUrl()}${rawPdfUrl}`
-    }
+    const xhr = await this.fetchPage(scihubUrl)
+    // Mirrors may redirect to another domain: resolve links against the final URL
+    const pdfUrl = this.extractScihubPdfUrl(xhr.responseXML, xhr.responseURL || scihubUrl.href)
     const body = xhr.responseXML?.querySelector('body')
 
     if (xhr.status === HttpCodes.DONE && pdfUrl) {
@@ -194,32 +297,62 @@ class Scihub {
     } else if (xhr.status === HttpCodes.DONE && this.isCaptchaRequired(body)) {
       Zotero.debug(`scihub: captcha required for "${scihubUrl}"`)
       throw new CaptchaRequiredError(`Captcha is required: ${scihubUrl}`)
-    } else if (xhr.status === HttpCodes.DONE) {
-      // Page loaded (200) but we found no #pdf link and no known message — log a
-      // snippet of what Sci-Hub returned so the page format can be diagnosed.
+    } else if (xhr.status === HttpCodes.DONE || xhr.status === HttpCodes.NOT_FOUND) {
+      // Any other page without a PDF ("try Sci-Net", search page...) means the
+      // paper is not here. Log a snippet so a new page format can be diagnosed.
       // eslint-disable-next-line @typescript-eslint/no-magic-numbers
       const snippet = (body?.innerHTML ?? '').replace(/\s+/g, ' ').trim().slice(0, 300)
-      Zotero.debug(`scihub: 200 but no PDF link for "${scihubUrl.href}". Body snippet: ${snippet}`)
-      throw new Error('No PDF link on page')
+      Zotero.debug(`scihub: ${xhr.status} but no PDF link for "${scihubUrl.href}". Body snippet: ${snippet}`)
+      throw new PdfNotFoundError(`Pdf is not available: ${scihubUrl}`)
     } else {
       Zotero.debug(`scihub: failed to fetch PDF from "${scihubUrl}" status=${xhr.status} statusText=${xhr.statusText}`)
       throw new Error(`HTTP ${xhr.status}${xhr.statusText ? ` ${xhr.statusText}` : ''}`)
     }
   }
 
+  // Sci-Net shows the paper in an iframe; unknown DOIs are redirected to the home page
+  private async resolveScinetPdfUrl(scinetUrl: URL): Promise<URL> {
+    const xhr = await this.fetchPage(scinetUrl)
+    const rawUrl = xhr.responseXML?.querySelector('iframe[src*=".pdf"]')?.getAttribute('src')
+    if (xhr.status === HttpCodes.DONE && rawUrl) {
+      return UrlUtil.urlToHttps(new URL(rawUrl, xhr.responseURL || scinetUrl.href).href)
+    }
+    throw new PdfNotFoundError(`Pdf is not available: ${scinetUrl}`)
+  }
+
+  private extractScihubPdfUrl(doc: Document | null | undefined, baseUrl: string): string | null {
+    if (!doc) return null
+    // older .tf domains have an iframe#pdf, .st domains an embed#pdf, and the
+    // .ru domain (2026) a citation_pdf_url meta, an <object> and a download link
+    const rawUrl = doc.querySelector('#pdf')?.getAttribute('src')
+      ?? doc.querySelector('meta[name="citation_pdf_url"]')?.getAttribute('content')
+      ?? doc.querySelector('object[type="application/pdf"]')?.getAttribute('data')
+      ?? doc.querySelector('.download a')?.getAttribute('href')
+    if (!rawUrl) return null
+    // Resolve relative and protocol-relative ("//host/file.pdf") urls against the page
+    return new URL(rawUrl, baseUrl).href
+  }
+
   private isPdfNotAvailable(body: HTMLBodyElement | null | undefined): boolean {
     const innerHTML = body?.innerHTML
     // older .tf domain return rich error message
     // newer .st domains return empty page if pdf is not available
+    // sci-hub.ru (2026) answers "статья отсутствует в базе" (article not in the
+    // database) for papers published after 2021, pointing to Sci-Net
     if (!innerHTML || innerHTML?.trim() === '' ||
       innerHTML?.match(/Please try to search again using DOI/im) ||
-      innerHTML?.match(/статья не найдена в базе/im)) {
+      innerHTML?.match(/статья не найдена в базе/im) ||
+      innerHTML?.match(/(отсутствует|нет) в (моей )?базе/im)) {
       return true
     }
     return false
   }
 
   private isCaptchaRequired(body: HTMLBodyElement | null | undefined): boolean {
+    // sci-hub.ru (2026) asks "are you a robot?" in a .question with an .answer button
+    if (body?.querySelector('.question .answer')) {
+      return true
+    }
     const innerHTML = body?.innerHTML
     if (innerHTML?.match(/captcha|challenge/im)) {
       return true
@@ -452,7 +585,7 @@ class Scihub {
   // appended to it instead: adding papers one by one fires one notifier event
   // per item, and each event must not spawn or reset a window.
   public async openDownloadManager(collection: ZoteroCollection, items: ZoteroItem[]): Promise<void> {
-    const regular = items.filter(item => item.isRegularItem() && !item.isCollection?.())
+    const regular = items.filter(item => item.isRegularItem())
     if (regular.length === 0) {
       ZoteroUtil.showPopup('Nothing to download', `"${collection.name}" has no regular items.`, true)
       return
@@ -829,14 +962,24 @@ class Scihub {
             if (!row.savedPath) {
               row.statusCell.textContent = 'Downloading…'
               logActivity(`⬇ ${row.titleText}`)
-              row.savedPath = await this.downloadPdfToFolder(row.item, currentFolder)
+              const saved = await this.downloadPdfToFolder(row.item, currentFolder, status => {
+                row.statusCell.textContent = status
+                logActivity(`↪ ${status}`)
+              })
+              row.savedPath = saved.path
+              row.source = saved.source
+              row.attached = saved.attached
             }
-            row.statusCell.textContent = 'Attaching…'
-            await this.attachFileToItem(row.item, row.savedPath)
-            row.statusCell.textContent = '✓ Done'
+            if (!row.attached) {
+              row.statusCell.textContent = 'Attaching…'
+              await this.attachFileToItem(row.item, row.savedPath)
+              row.attached = true
+            }
+            const via = row.source && row.source !== 'Sci-Hub' ? ` (${row.source})` : ''
+            row.statusCell.textContent = `✓ Done${via}`
             row.failed = false
             resolved = true
-            logActivity(`✓ ${row.titleText}`)
+            logActivity(`✓ ${row.titleText}${via}`)
           } catch (error) {
             const err: any = error
             if (err instanceof CaptchaRequiredError && scihubUrl) {
@@ -893,7 +1036,7 @@ class Scihub {
   // Short, human-readable reason a download failed (shown in the Status column)
   private describeDownloadError(error: any): string {
     if (error instanceof CaptchaRequiredError) return '⚠ Captcha required'
-    if (error instanceof PdfNotFoundError) return '✕ Not on Sci-Hub'
+    if (error instanceof PdfNotFoundError || error instanceof NetworkError) return `✕ ${error.message}`
     let message = error && error.message ? String(error.message) : ''
     if (!message) message = error && error.name ? String(error.name) : String(error)
     if (!message || message === 'Error') message = 'Unknown error'
@@ -910,19 +1053,35 @@ class Scihub {
     return match ? match[0] : ''
   }
 
-  // Downloads the item's PDF from Sci-Hub and saves it into folderPath. Returns
-  // the saved file path. Throws PdfNotFoundError / CaptchaRequiredError / Error.
-  public async downloadPdfToFolder(item: ZoteroItem, folderPath: string): Promise<string> {
-    const scihubUrl = this.generateScihubItemUrl(item)
-    if (!scihubUrl) {
+  // Downloads the item's PDF (Sci-Hub, then Sci-Net) and saves it into
+  // folderPath. When neither has it, Zotero's open-access lookup attaches a copy
+  // and that file is copied into folderPath. onStatus reports each fallback.
+  // Throws PdfNotFoundError / CaptchaRequiredError / NetworkError / Error.
+  public async downloadPdfToFolder(item: ZoteroItem, folderPath: string, onStatus?: (status: string) => void): Promise<SavedPdf> {
+    const doi = this.getDoi(item)
+    if (!doi) {
       throw new Error('DOI is missing')
     }
 
-    const httpsUrl = await this.resolvePdfHttpsUrl(scihubUrl)
+    let pdf: { url: URL, source: string }
+    try {
+      pdf = await this.resolvePdfUrl(doi, onStatus)
+    } catch (error) {
+      if (!(error instanceof PdfNotFoundError) && !(error instanceof NetworkError)) throw error
+      onStatus?.('Looking for open access…')
+      const attachment = await this.attachOpenAccessPdf(item)
+      if (!attachment) throw error
+      const storedPath = await attachment.getFilePathAsync?.()
+      if (!storedPath) throw new Error('Open-access file attached, but not found on disk')
+      const ext: string = PathUtils.filename(storedPath).split('.').pop() || 'pdf'
+      const copyPath = await this.buildUniqueFilePath(item, folderPath, ext)
+      await IOUtils.copy(storedPath, copyPath)
+      return { path: copyPath, source: 'open access', attached: true }
+    }
 
     // Fetch the raw PDF bytes
     const xhr = await Zotero.HTTP.request(
-      'GET', httpsUrl.href, { responseType: 'arraybuffer', timeout: 60000 }
+      'GET', pdf.url.href, { responseType: 'arraybuffer', timeout: 60000 }
     )
     if (xhr.status !== HttpCodes.DONE || !xhr.response) {
       throw new Error(xhr.status === HttpCodes.DONE
@@ -930,30 +1089,48 @@ class Scihub {
         : `HTTP ${xhr.status}${xhr.statusText ? ` ${xhr.statusText}` : ''} fetching PDF`)
     }
     const bytes = new Uint8Array(xhr.response as ArrayBuffer)
+    if (!this.looksLikePdf(bytes)) {
+      Zotero.debug(`scihub: ${pdf.source} returned something that is not a PDF from "${pdf.url.href}"`)
+      throw new Error(`${pdf.source} did not return a PDF`)
+    }
 
     // Write to the chosen folder under a unique, human-readable filename
     const filePath = await this.buildUniqueFilePath(item, folderPath)
     await IOUtils.write(filePath, bytes)
-    return filePath
+    return { path: filePath, source: pdf.source, attached: false }
   }
 
-  // Attaches an already-saved file to the matching Zotero item.
+  // A PDF starts with "%PDF-", possibly after a few bytes of junk
+  private looksLikePdf(bytes: Uint8Array): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-magic-numbers
+    const head = String.fromCharCode(...Array.from(bytes.subarray(0, 1024)))
+    return head.includes('%PDF-')
+  }
+
+  // Attaches an already-saved file to the matching Zotero item. The copy in
+  // Zotero's storage follows the user's file renaming settings, like a file
+  // added through Zotero's own "Attach File" does.
   public async attachFileToItem(item: ZoteroItem, filePath: string): Promise<void> {
+    let fileBaseName: string | false = false
+    if (Zotero.Attachments.shouldAutoRenameFile?.(false, item.libraryID)) {
+      fileBaseName = await Zotero.Attachments.getRenamedFileBaseNameIfAllowedType?.(item, filePath) ?? false
+    }
     await Zotero.Attachments.importFromFile({
       file: Zotero.File.pathToFile(filePath),
       libraryID: item.libraryID,
       parentItemID: item.id,
       title: item.getField('title'),
       contentType: 'application/pdf',
+      ...(fileBaseName ? { fileBaseName } : {}),
     })
   }
 
-  private async buildUniqueFilePath(item: ZoteroItem, folderPath: string): Promise<string> {
+  private async buildUniqueFilePath(item: ZoteroItem, folderPath: string, ext = 'pdf'): Promise<string> {
     const base = this.buildFileBaseName(item)
-    let candidate: string = PathUtils.join(folderPath, `${base}.pdf`)
+    let candidate: string = PathUtils.join(folderPath, `${base}.${ext}`)
     let counter = 2
     while (await IOUtils.exists(candidate)) {
-      candidate = PathUtils.join(folderPath, `${base} (${counter}).pdf`)
+      candidate = PathUtils.join(folderPath, `${base} (${counter}).${ext}`)
       counter += 1
     }
     return candidate

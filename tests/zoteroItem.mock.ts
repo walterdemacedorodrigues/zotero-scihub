@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-magic-numbers */
 import { ZoteroItem } from '../typings/zotero'
 
 const regularItem1: ZoteroItem = new class {
@@ -124,4 +125,26 @@ const unavailableItem: ZoteroItem = new class {
   }
 }
 
-export { regularItem1, regularItem2, collectionItem, itemWithoutDOI, DOIinExtraItem, DOIinUrlItem, captchaItem, unavailableItem }
+const pdfAttachment = new class {
+  public isPDFAttachment() { return true }
+}
+
+// Child attachments, looked up by id through Zotero.Items.getAsync
+const attachmentsById: Record<number, any> = { 100: pdfAttachment }
+
+const itemWithPdf: ZoteroItem = new class {
+  public isRegularItem() { return true }
+  public getAttachments() { return [100] }
+  public libraryID = 'regularItemLibraryID2'
+  public id = '9'
+  public getField(f: string): any {
+    switch (f) {
+      case 'title': return 'itemWithPdfTitle'
+      case 'DOI': return '10.1037/a0023781'
+      case 'extra': return
+      case 'url': return
+    }
+  }
+}
+
+export { regularItem1, regularItem2, collectionItem, itemWithoutDOI, DOIinExtraItem, DOIinUrlItem, captchaItem, unavailableItem, itemWithPdf, attachmentsById }

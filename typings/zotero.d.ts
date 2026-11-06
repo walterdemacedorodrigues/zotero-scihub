@@ -22,9 +22,10 @@ interface ZoteroItem {
   libraryID: string
   getField: (field: string, unformatted?: boolean, includeBaseMapped?: boolean) => string
   isRegularItem: () => boolean
-  isCollection?: () => boolean
   getCollections?: () => number[]
   getAttachments?: () => number[]
+  // attachments only: path of the stored file, false if it is missing
+  getFilePathAsync?: () => Promise<string | false>
 }
 
 interface ProgressWindow {
@@ -69,12 +70,19 @@ interface IZotero {
       responseType?: XMLHttpRequestResponseType,
       headers?: Record<string, string>,
       timeout?: number,
+      noCache?: boolean,
+      // HTTP status codes considered successful, or false to accept any
+      successCodes?: number[] | false,
     }) => Promise<XMLHttpRequest>
   }
 
   Attachments: {
     importFromURL: (options: Record<string, any>) => Promise<ZoteroItem>
     importFromFile: (options: Record<string, any>) => Promise<ZoteroItem>
+    // Zotero's "Find Full Text": resolves an open-access PDF and attaches it, false if none
+    addAvailableFile: (item: ZoteroItem, options?: { methods?: string[] }) => Promise<ZoteroItem | false>
+    shouldAutoRenameFile?: (isLink: boolean, libraryID?: string) => boolean
+    getRenamedFileBaseNameIfAllowedType?: (parentItem: ZoteroItem, file: string) => Promise<string | false>
   }
 
   File: {

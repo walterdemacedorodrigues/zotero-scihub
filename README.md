@@ -5,7 +5,7 @@ I've been away from any open source work for a while. I also have had issues wit
 
 This is an add-on for [Zotero](https://www.zotero.org/) and [Juris-M](https://juris-m.github.io/) that enables automatic download of PDFs for items with a DOI.
 
-Compatible with **Zotero 7, 8 and 9**. On Zotero 8+ the menu items are registered through the new `Zotero.MenuManager` API; on Zotero 7 the add-on falls back to manual menu injection.
+Compatible with **Zotero 7, 8, 9 and 10**. On Zotero 8+ the menu items are registered through the new `Zotero.MenuManager` API; on Zotero 7 the add-on falls back to manual menu injection.
 
 # Quick Start Guide
 
@@ -34,16 +34,23 @@ The plugin works per **collection**, and each collection downloads into its own 
     (e.g. several added in a row) are appended to its list instead of opening
     another window; an article already listed is not added twice.
 - Each PDF is saved into the collection's folder **and** attached to the matching
-  Zotero item.
+  Zotero item. The copy in Zotero's storage is named by your file renaming settings
+  (Settings → General → File Renaming); the one in the folder keeps the article title.
+- Sci-Hub stopped adding papers in 2022. When it doesn't have an article, the plugin
+  tries [Sci-Net](https://sci-net.xyz/), where newer papers are uploaded by the
+  community, and then Zotero's own open-access lookup (Unpaywall, OpenAlex, publisher
+  page). The row shows where the PDF came from, e.g. "✓ Done (Sci-Net)".
 - Items that are not in any collection, or only in `Inbox`, are ignored.
 - You can also open the manager manually by right-clicking a collection ("Download
   Collection PDFs…"), via Tools ("Download Sci-Hub PDFs…", uses the selected
   collection), or on selected items ("Download Sci-Hub PDF").
 - If a PDF can't be found (or a captcha is required), that item's row shows the
-  problem ("✕ No PDF found" / "⚠ Captcha required") and the rest continue.
+  problem ("✕ No PDF found" / "⚠ Captcha required") and the rest continue. A mirror
+  your network blocks shows as "✕ Cannot reach …"; try another one in the settings.
 
 The collection → folder mappings can be viewed, changed, or removed in the plugin
-settings (Settings → Zotero Scihub).
+settings (Settings → Zotero Scihub). The Sci-Hub and Sci-Net addresses are set there
+too.
 
 #### Configuration
 
