@@ -30,6 +30,9 @@ The plugin works per **collection**, and each collection downloads into its own 
     (remembered for next time); if it does, that folder is used.
   - The window lists the articles and, on **Start download**, fetches each PDF
     sequentially, showing live per-item status — no per-file save prompts.
+  - Each collection has at most one window. Articles added while it is open
+    (e.g. several added in a row) are appended to its list instead of opening
+    another window; an article already listed is not added twice.
 - Each PDF is saved into the collection's folder **and** attached to the matching
   Zotero item.
 - Items that are not in any collection, or only in `Inbox`, are ignored.

@@ -55,6 +55,14 @@ interface ManagerRow {
   savedPath?: string
 }
 
+// One open download manager per collection. Items arriving while the window
+// is still opening wait in `pending`; afterwards they go through `addItems`.
+interface ManagerHandle {
+  win: any | null
+  addItems: ((items: ZoteroItem[]) => void) | null
+  pending: ZoteroItem[]
+}
+
 class Scihub {
   // TOOD: only bulk-update items which are missing paper attachement
   private static readonly DEFAULT_SCIHUB_URL = 'https://sci-hub.al/'
@@ -65,6 +73,8 @@ class Scihub {
   private static readonly COLLECTION_FOLDERS_PREF = 'zoteroscihub.collection_folders'
   private observerId: number | null = null
   private initialized = false
+  // Open download managers, keyed by collection key
+  private managers = new Map<string, ManagerHandle>()
   // Filenames are truncated to keep them within filesystem limits
   // eslint-disable-next-line @typescript-eslint/no-magic-numbers
   private static readonly MAX_FILENAME_LENGTH = 150
@@ -438,31 +448,60 @@ class Scihub {
   // (asking once if unset), then builds the item list with live per-item progress.
   // The UI is built programmatically here (Zotero 9's CSP blocks scripts loaded
   // inside plugin dialog documents), so there are no per-item prompts or popups.
+  // If the collection already has a manager open (or opening), the items are
+  // appended to it instead: adding papers one by one fires one notifier event
+  // per item, and each event must not spawn or reset a window.
   public async openDownloadManager(collection: ZoteroCollection, items: ZoteroItem[]): Promise<void> {
+    const regular = items.filter(item => item.isRegularItem() && !item.isCollection?.())
+    if (regular.length === 0) {
+      ZoteroUtil.showPopup('Nothing to download', `"${collection.name}" has no regular items.`, true)
+      return
+    }
+
+    // win is null while the folder is being resolved, so the handle counts as open
+    const existing = this.managers.get(collection.key)
+    if (existing && !existing.win?.closed) {
+      if (existing.addItems) {
+        existing.addItems(regular)
+      } else {
+        existing.pending.push(...regular)
+      }
+      return
+    }
+
+    // Registered before the first await so concurrent calls queue into it
+    const handle: ManagerHandle = { win: null, addItems: null, pending: regular.slice() }
+    this.managers.set(collection.key, handle)
+    const forget = () => {
+      if (this.managers.get(collection.key) === handle) this.managers.delete(collection.key)
+    }
+
     try {
-      const regular = items.filter(item => item.isRegularItem() && !item.isCollection?.())
-      if (regular.length === 0) {
-        ZoteroUtil.showPopup('Nothing to download', `"${collection.name}" has no regular items.`, true)
+      const folder = await this.resolveFolderForCollection(collection)
+      if (!folder) {
+        forget()
         return
       }
 
-      const folder = await this.resolveFolderForCollection(collection)
-      if (!folder) return
-
-      Zotero.debug(`scihub: opening download manager for "${collection.name}" (${regular.length} items) -> ${folder}`)
+      Zotero.debug(`scihub: opening download manager for "${collection.name}" (${handle.pending.length} items) -> ${folder}`)
       const mainWin = Zotero.getMainWindow()
       // Open a blank window (loads instantly) and build the UI into it. Loading a
       // bundled file via openDialog fails for packaged plugins (jar: rootURI), so
       // the window's document stays "uninitialized".
+      // The name must be '_blank': with a fixed name, openDialog returns the
+      // window already open and schedules a fresh about:blank load in it, which
+      // wipes whatever gets built there in the meantime.
       const win = mainWin.openDialog(
         'about:blank',
-        'scihub-download-manager',
+        '_blank',
         'chrome,centerscreen,resizable,dialog=no,width=1080,height=640'
       )
       if (!win) {
+        forget()
         ZoteroUtil.showPopup('Error', 'Could not open the download window.', true)
         return
       }
+      handle.win = win
 
       Zotero.debug(`scihub: openDialog returned win=${!!win}, type=${typeof win}`)
 
@@ -495,14 +534,18 @@ class Scihub {
         if (hasBody && ((documentReady && height > 0) || fallback)) {
           Zotero.debug(`scihub: building (attempt ${attempts}, state=${state}, innerHeight=${height})`)
           try {
-            this.buildDownloadManager(win, regular, folder, collection)
+            const addItems = this.buildDownloadManager(win, handle.pending, folder, collection)
+            handle.pending = []
+            handle.addItems = addItems
           } catch (error) {
+            forget()
             Zotero.debug(`scihub: buildDownloadManager failed: ${error}`)
             ZoteroUtil.showPopup('Error', `Download window failed to render: ${error}`, true)
           }
           return
         }
         if (attempts > 200) {
+          forget()
           Zotero.debug(`scihub: gave up waiting; state=${state} body=${hasBody} innerHeight=${height}`)
           ZoteroUtil.showPopup('Error', 'Download window did not become ready.', true)
           return
@@ -512,24 +555,25 @@ class Scihub {
       tryBuild()
       /* eslint-enable @typescript-eslint/no-magic-numbers */
     } catch (error) {
+      forget()
       Zotero.debug(`scihub: error opening download manager: ${error}`)
       ZoteroUtil.showPopup('Error', `Could not open the download window: ${error}`, true)
     }
   }
 
   // Builds the manager UI inside the (already loaded) blank dialog window.
-  private buildDownloadManager(win: any, items: ZoteroItem[], folder: string, collection: ZoteroCollection): void {
+  // Returns a function that appends more items to the list (duplicates ignored).
+  private buildDownloadManager(win: any, items: ZoteroItem[], folder: string, collection: ZoteroCollection): (items: ZoteroItem[]) => void {
     const doc = win.document
     Zotero.debug(`scihub: building manager UI, readyState=${doc.readyState}`)
 
     const root = doc.body
     if (!root) {
       Zotero.debug('scihub: dialog has no document.body')
-      ZoteroUtil.showPopup('Error', 'Download window shell did not load.', true)
-      return
+      throw new Error('Download window shell did not load.')
     }
     Zotero.debug(`scihub: innerWidth=${win.innerWidth} innerHeight=${win.innerHeight}`)
-    try { doc.title = 'Sci-Hub Download Manager' } catch (e) { /* ignore */ }
+    try { doc.title = `Sci-Hub Download Manager — ${collection.name}` } catch (e) { /* ignore */ }
     if (doc.documentElement && doc.documentElement.style) {
       doc.documentElement.style.height = '100%'
       doc.documentElement.style.colorScheme = 'light dark'
@@ -598,6 +642,10 @@ class Scihub {
     panel.appendChild(make('div', 'font-weight:bold;', 'Activity'))
     const logArea = make('div', 'flex:1 1 auto; min-height:60px; overflow:auto; font-size:0.9em; line-height:1.35;')
     panel.appendChild(logArea)
+    const logActivity = (text: string) => {
+      logArea.appendChild(make('div', '', text))
+      logArea.scrollTop = logArea.scrollHeight
+    }
 
     const captchaArea = make('div', 'display:none; flex-direction:column; gap:4px; flex:2 1 auto; min-height:0;')
     const captchaMsg = make('div', 'font-weight:bold;', 'Captcha required — solve it below, then click Continue.')
@@ -631,28 +679,14 @@ class Scihub {
     container.appendChild(footer)
 
     const rows: ManagerRow[] = []
+    const rowItemIds = new Set<number>()
     let total = 0
-    for (const item of items) {
-      const doi = this.getDoi(item) || ''
-      const hasDoi = !!doi
-      if (hasDoi) total += 1
-      const titleText = item.getField('title') || '(untitled)'
-      const year = this.getItemYear(item)
-      const tr = make('tr', 'border-top:1px solid rgba(127,127,127,0.25);')
-      tr.appendChild(make('td', 'padding:4px;', titleText))
-      tr.appendChild(make('td', 'padding:4px; white-space:nowrap;', year || '—'))
-      tr.appendChild(make('td', 'padding:4px; opacity:0.8; word-break:break-all;', doi || '—'))
-      const statusCell = make('td', 'padding:4px;', hasDoi ? 'Queued' : 'No DOI')
-      tr.appendChild(statusCell)
-      tbody.appendChild(tr)
-      rows.push({ item, tr, titleText, year, doi, statusCell, hasDoi, alreadyHas: false, failed: false })
-    }
 
     // Click a column header to sort by it (toggles ascending/descending)
     let sortCol = -1
     let sortAsc = true
-    const sortBy = (col: number) => {
-      if (sortCol === col) { sortAsc = !sortAsc } else { sortCol = col; sortAsc = true }
+    const applySort = () => {
+      const col = sortCol
       const value = (r: ManagerRow): string => {
         if (col === 0) return r.titleText.toLowerCase()
         if (col === 1) return r.year
@@ -671,33 +705,64 @@ class Scihub {
         th.textContent = headerDefs[i].label + (i === col ? (sortAsc ? '  ▲' : '  ▼') : '')
       })
     }
+    const sortBy = (col: number) => {
+      if (sortCol === col) { sortAsc = !sortAsc } else { sortCol = col; sortAsc = true }
+      applySort()
+    }
 
     const isDone = (r: ManagerRow): boolean => String(r.statusCell.textContent ?? '').startsWith('✓')
     const updateSummary = () => {
       const done = rows.filter(isDone).length
       summary.textContent = `${done} / ${total} done`
     }
+
+    // Appends items not yet listed. Rows pushed while a download run is going
+    // over `rows` get picked up by that same run.
+    const addRows = (newItems: ZoteroItem[]): ManagerRow[] => {
+      const added: ManagerRow[] = []
+      for (const item of newItems) {
+        const itemId = parseInt(item.id)
+        if (rowItemIds.has(itemId)) continue
+        rowItemIds.add(itemId)
+        const doi = this.getDoi(item) || ''
+        const hasDoi = !!doi
+        if (hasDoi) total += 1
+        const titleText = item.getField('title') || '(untitled)'
+        const year = this.getItemYear(item)
+        const tr = make('tr', 'border-top:1px solid rgba(127,127,127,0.25);')
+        tr.appendChild(make('td', 'padding:4px;', titleText))
+        tr.appendChild(make('td', 'padding:4px; white-space:nowrap;', year || '—'))
+        tr.appendChild(make('td', 'padding:4px; opacity:0.8; word-break:break-all;', doi || '—'))
+        const statusCell = make('td', 'padding:4px;', hasDoi ? 'Queued' : 'No DOI')
+        tr.appendChild(statusCell)
+        tbody.appendChild(tr)
+        const row: ManagerRow = { item, tr, titleText, year, doi, statusCell, hasDoi, alreadyHas: false, failed: false }
+        rows.push(row)
+        added.push(row)
+      }
+      if (added.length === 0) return added
+      if (sortCol >= 0) applySort()
+      updateSummary()
+
+      // Pre-mark already-downloaded items (async, non-blocking)
+      void (async () => {
+        for (const row of added) {
+          if (!row.hasDoi) continue
+          try {
+            if (await this.itemHasPdfAttachment(row.item)) {
+              row.alreadyHas = true
+              row.statusCell.textContent = '✓ Already downloaded'
+              updateSummary()
+            }
+          } catch (e) { /* ignore */ }
+        }
+      })()
+      return added
+    }
+
+    addRows(items)
     updateSummary()
     Zotero.debug(`scihub: manager UI built, ${rows.length} rows, ${total} with DOI`)
-
-    // Pre-mark already-downloaded items (async, non-blocking)
-    void (async () => {
-      for (const row of rows) {
-        if (!row.hasDoi) continue
-        try {
-          if (await this.itemHasPdfAttachment(row.item)) {
-            row.alreadyHas = true
-            row.statusCell.textContent = '✓ Already downloaded'
-            updateSummary()
-          }
-        } catch (e) { /* ignore */ }
-      }
-    })()
-
-    const logActivity = (text: string) => {
-      logArea.appendChild(make('div', '', text))
-      logArea.scrollTop = logArea.scrollHeight
-    }
 
     // Captcha gate: shows the Sci-Hub page in the side iframe and resolves with
     // the user's choice ('retry' after solving, or 'skip').
@@ -816,6 +881,13 @@ class Scihub {
     })
     startBtn.addEventListener('click', () => { void processRows(rows) })
     retryBtn.addEventListener('click', () => { void processRows(rows.filter(r => r.failed)) })
+
+    return (newItems: ZoteroItem[]) => {
+      const added = addRows(newItems)
+      if (added.length === 0) return
+      logActivity(`+ ${added.length} item(s) added to the list`)
+      Zotero.debug(`scihub: appended ${added.length} rows to "${collection.name}" manager (${rows.length} total)`)
+    }
   }
 
   // Short, human-readable reason a download failed (shown in the Status column)
